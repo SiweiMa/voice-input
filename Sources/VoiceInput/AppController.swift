@@ -3,27 +3,66 @@ import AVFoundation
 import ApplicationServices
 import Speech
 
+@MainActor
 final class AppController: NSObject {
-    private let settings = AppSettings.shared
-    private let fnKeyMonitor = FnKeyMonitor()
-    private let transcriber = SpeechTranscriber()
-    private let overlayController = RecordingOverlayController()
-    private let pasteInjector = PasteInjector()
-    private let llmRefiner = LLMRefiner()
+    // Session lifecycle:
+    // idle -> recording -> finalizing -> idle
+    //          ^ stop/cancel ----------|
+    private enum SessionState {
+        case idle
+        case recording(sessionID: Int)
+        case finalizing(sessionID: Int)
+    }
+
+    private let settings: AppSettingsStore
+    private let fnKeyMonitor: FnKeyMonitoring
+    private let transcriber: SpeechTranscribing
+    private let overlayController: OverlayControlling
+    private let pasteInjector: PasteInjecting
+    private let llmRefiner: LLMRefining
     private let settingsWindowController = SettingsWindowController()
 
     private var statusItem: NSStatusItem?
-    private var isRecording = false
-    private var isFinalizing = false
+    private var sessionState: SessionState = .idle
+    private var nextSessionID = 0
     private var permissionsPrimed = false
     private var observer: NSObjectProtocol?
     private var eventTapAvailable = true
+    private var fnMonitorRetryTimer: Timer?
+    private var finalizationTask: Task<Void, Never>?
+
+    override init() {
+        settings = AppSettings.shared
+        fnKeyMonitor = FnKeyMonitor()
+        transcriber = SpeechTranscriber()
+        overlayController = RecordingOverlayController()
+        pasteInjector = PasteInjector()
+        llmRefiner = LLMRefiner()
+        super.init()
+    }
+
+    init(
+        settings: AppSettingsStore,
+        fnKeyMonitor: FnKeyMonitoring,
+        transcriber: SpeechTranscribing,
+        overlayController: OverlayControlling,
+        pasteInjector: PasteInjecting,
+        llmRefiner: LLMRefining
+    ) {
+        self.settings = settings
+        self.fnKeyMonitor = fnKeyMonitor
+        self.transcriber = transcriber
+        self.overlayController = overlayController
+        self.pasteInjector = pasteInjector
+        self.llmRefiner = llmRefiner
+        super.init()
+    }
 
     func start() {
         configureStatusItem()
         configureCallbacks()
         requestInitialPermissions()
-        eventTapAvailable = fnKeyMonitor.start()
+        refreshFnMonitorAvailability()
         rebuildMenu()
 
         observer = NotificationCenter.default.addObserver(
@@ -31,13 +70,20 @@ final class AppController: NSObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.rebuildMenu()
+            Task { @MainActor [weak self] in
+                self?.rebuildMenu()
+            }
         }
     }
 
     func stop() {
+        fnMonitorRetryTimer?.invalidate()
+        finalizationTask?.cancel()
+        finalizationTask = nil
+        sessionState = .idle
         fnKeyMonitor.stop()
         transcriber.cancel()
+        overlayController.hide()
 
         if let observer {
             NotificationCenter.default.removeObserver(observer)
@@ -54,13 +100,7 @@ final class AppController: NSObject {
 
     private func configureCallbacks() {
         fnKeyMonitor.onPressStateChanged = { [weak self] isPressed in
-            guard let self else { return }
-
-            if isPressed {
-                self.beginRecording()
-            } else {
-                self.endRecording()
-            }
+            self?.handlePressStateChanged(isPressed)
         }
 
         transcriber.onLevelChanged = { [weak self] level in
@@ -83,10 +123,38 @@ final class AppController: NSObject {
         _ = AXIsProcessTrustedWithOptions(options)
     }
 
-    private func beginRecording() {
-        guard !isRecording, !isFinalizing else { return }
+    private func refreshFnMonitorAvailability() {
+        let wasAvailable = eventTapAvailable
+        eventTapAvailable = fnKeyMonitor.start()
 
-        isRecording = true
+        if eventTapAvailable {
+            fnMonitorRetryTimer?.invalidate()
+            fnMonitorRetryTimer = nil
+        } else if fnMonitorRetryTimer == nil {
+            fnMonitorRetryTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    let becameAvailable = self.fnKeyMonitor.start()
+                    guard becameAvailable else { return }
+
+                    self.eventTapAvailable = true
+                    self.fnMonitorRetryTimer?.invalidate()
+                    self.fnMonitorRetryTimer = nil
+                    self.rebuildMenu()
+                }
+            }
+        }
+
+        if wasAvailable != eventTapAvailable {
+            rebuildMenu()
+        }
+    }
+
+    private func beginRecording() {
+        guard case .idle = sessionState else { return }
+
+        let sessionID = makeSessionID()
+        sessionState = .recording(sessionID: sessionID)
         overlayController.show()
         overlayController.updateStatus("Listening...")
         overlayController.updateTranscript("")
@@ -94,69 +162,26 @@ final class AppController: NSObject {
         do {
             try transcriber.start(locale: settings.selectedLanguage.locale)
         } catch {
-            isRecording = false
+            sessionState = .idle
             overlayController.updateStatus("Speech unavailable")
             overlayController.hide(after: 0.9)
         }
     }
 
     private func endRecording() {
-        guard isRecording, !isFinalizing else { return }
+        guard case let .recording(sessionID) = sessionState else { return }
 
-        isRecording = false
-        isFinalizing = true
+        sessionState = .finalizing(sessionID: sessionID)
         overlayController.updateAudioLevel(0)
 
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-
-            let transcript = await self.transcriber.stop()
-            let trimmedTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-
-            guard !trimmedTranscript.isEmpty else {
-                self.overlayController.hide()
-                self.isFinalizing = false
-                return
-            }
-
-            var finalText = trimmedTranscript
-
-            if self.settings.llmEnabled, self.settings.hasLLMConfiguration {
-                self.overlayController.updateStatus("Refining...")
-
-                do {
-                    let refined = try await self.llmRefiner.refine(
-                        trimmedTranscript,
-                        baseURL: self.settings.apiBaseURL,
-                        apiKey: self.settings.apiKey,
-                        model: self.settings.model
-                    )
-
-                    let candidate = refined.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !candidate.isEmpty {
-                        finalText = candidate
-                    }
-                } catch {
-                    self.overlayController.updateStatus("Refine failed")
-                    try? await Task.sleep(nanoseconds: 250_000_000)
-                }
-            }
-
-            self.overlayController.updateTranscript(finalText)
-
-            do {
-                try await self.pasteInjector.inject(text: finalText)
-                self.overlayController.hide()
-            } catch {
-                self.overlayController.updateStatus("Paste failed")
-                self.overlayController.hide(after: 1.0)
-            }
-
-            self.isFinalizing = false
+        finalizationTask?.cancel()
+        finalizationTask = Task { @MainActor [weak self] in
+            await self?.finalizeRecording(sessionID: sessionID)
         }
     }
 
     private func rebuildMenu() {
+        refreshFnMonitorAvailabilityIfNeeded()
         let menu = NSMenu()
 
         let titleItem = NSMenuItem(
@@ -167,17 +192,15 @@ final class AppController: NSObject {
         titleItem.isEnabled = false
         menu.addItem(titleItem)
 
-        if !eventTapAvailable {
-            let warningItem = NSMenuItem(
-                title: "Fn listener unavailable (grant Input Monitoring)",
-                action: nil,
-                keyEquivalent: ""
-            )
+        for warning in permissionWarnings() {
+            let warningItem = NSMenuItem(title: warning, action: nil, keyEquivalent: "")
             warningItem.isEnabled = false
             menu.addItem(warningItem)
         }
 
-        menu.addItem(.separator())
+        if menu.items.count > 1 {
+            menu.addItem(.separator())
+        }
 
         let languageItem = NSMenuItem(title: "Language", action: nil, keyEquivalent: "")
         let languageMenu = NSMenu()
@@ -245,5 +268,149 @@ final class AppController: NSObject {
 
     @objc private func quit(_ sender: Any?) {
         NSApp.terminate(nil)
+    }
+
+    private func refreshFnMonitorAvailabilityIfNeeded() {
+        guard !eventTapAvailable else { return }
+        refreshFnMonitorAvailability()
+    }
+
+    func handlePressStateChanged(_ isPressed: Bool) {
+        if isPressed {
+            beginRecording()
+        } else {
+            endRecording()
+        }
+    }
+
+    private func makeSessionID() -> Int {
+        nextSessionID += 1
+        return nextSessionID
+    }
+
+    private func isFinalizingSession(_ sessionID: Int) -> Bool {
+        guard case let .finalizing(currentID) = sessionState else {
+            return false
+        }
+
+        return currentID == sessionID
+    }
+
+    private func completeFinalization(sessionID: Int) {
+        if case let .finalizing(currentID) = sessionState, currentID == sessionID {
+            sessionState = .idle
+        }
+
+        if case .idle = sessionState {
+            finalizationTask = nil
+        }
+    }
+
+    private func finalizeRecording(sessionID: Int) async {
+        let transcript = await transcriber.stop()
+        guard isFinalizingSession(sessionID), !Task.isCancelled else {
+            completeFinalization(sessionID: sessionID)
+            return
+        }
+
+        let trimmedTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTranscript.isEmpty else {
+            overlayController.hide()
+            completeFinalization(sessionID: sessionID)
+            return
+        }
+
+        var finalText = trimmedTranscript
+
+        if settings.llmEnabled, settings.hasLLMConfiguration {
+            overlayController.updateStatus("Refining...")
+
+            do {
+                let refined = try await llmRefiner.refine(
+                    trimmedTranscript,
+                    baseURL: settings.apiBaseURL,
+                    apiKey: settings.apiKey,
+                    model: settings.model
+                )
+
+                guard isFinalizingSession(sessionID), !Task.isCancelled else {
+                    completeFinalization(sessionID: sessionID)
+                    return
+                }
+
+                let candidate = refined.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !candidate.isEmpty {
+                    finalText = candidate
+                }
+            } catch is CancellationError {
+                completeFinalization(sessionID: sessionID)
+                return
+            } catch {
+                overlayController.updateStatus("Refine failed")
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+        }
+
+        guard isFinalizingSession(sessionID), !Task.isCancelled else {
+            completeFinalization(sessionID: sessionID)
+            return
+        }
+
+        overlayController.updateTranscript(finalText)
+
+        do {
+            let outcome = try await pasteInjector.inject(text: finalText)
+            guard isFinalizingSession(sessionID), !Task.isCancelled else {
+                completeFinalization(sessionID: sessionID)
+                return
+            }
+
+            if let message = outcome.statusMessage {
+                overlayController.updateStatus(message)
+                overlayController.hide(after: 1.0)
+            } else {
+                overlayController.hide()
+            }
+        } catch is CancellationError {
+            completeFinalization(sessionID: sessionID)
+            return
+        } catch {
+            overlayController.updateStatus("Paste failed")
+            overlayController.hide(after: 1.0)
+        }
+
+        completeFinalization(sessionID: sessionID)
+    }
+
+    private func permissionWarnings() -> [String] {
+        var warnings: [String] = []
+
+        if !eventTapAvailable {
+            warnings.append("Fn listener unavailable: allow Input Monitoring, then relaunch")
+        }
+
+        if !AXIsProcessTrusted() {
+            warnings.append("Paste injection unavailable: allow Accessibility")
+        }
+
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            break
+        case .notDetermined:
+            warnings.append("Microphone permission is pending")
+        default:
+            warnings.append("Microphone permission is required")
+        }
+
+        switch SFSpeechRecognizer.authorizationStatus() {
+        case .authorized:
+            break
+        case .notDetermined:
+            warnings.append("Speech Recognition permission is pending")
+        default:
+            warnings.append("Speech Recognition permission is required")
+        }
+
+        return warnings
     }
 }

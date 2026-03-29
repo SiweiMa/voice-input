@@ -2,18 +2,42 @@ import AppKit
 import Carbon
 import Foundation
 
+@MainActor
 final class PasteInjector {
     enum Error: Swift.Error {
         case failedToCreateEventSource
         case accessibilityPermissionDenied
     }
 
+    private enum SnapshotPolicy {
+        static let maxItemCount = 10
+        static let maxTotalBytes = 5 * 1_024 * 1_024
+    }
+
+    private enum ClipboardSnapshot {
+        case restorable([PasteboardItemSnapshot])
+        case skipped
+
+        var canRestore: Bool {
+            if case .restorable = self {
+                return true
+            }
+
+            return false
+        }
+    }
+
     private struct PasteboardItemSnapshot {
         let contents: [NSPasteboard.PasteboardType: Data]
     }
 
-    func inject(text: String) async throws {
-        guard !text.isEmpty else { return }
+    // Clipboard path:
+    // snapshot if cheap -> paste text -> restore snapshot
+    // snapshot too large -> paste text -> leave clipboard alone
+    func inject(text: String) async throws -> PasteInjectionOutcome {
+        guard !text.isEmpty else {
+            return PasteInjectionOutcome(clipboardWasRestored: true)
+        }
 
         guard AXIsProcessTrusted() else {
             throw Error.accessibilityPermissionDenied
@@ -34,24 +58,43 @@ final class PasteInjector {
         try await Task.sleep(nanoseconds: 80_000_000)
         try postCommandV()
         try await Task.sleep(nanoseconds: 140_000_000)
+        return PasteInjectionOutcome(clipboardWasRestored: snapshot.canRestore)
     }
 
-    private func snapshotPasteboard(_ pasteboard: NSPasteboard) -> [PasteboardItemSnapshot] {
-        (pasteboard.pasteboardItems ?? []).map { item in
+    private func snapshotPasteboard(_ pasteboard: NSPasteboard) -> ClipboardSnapshot {
+        let items = pasteboard.pasteboardItems ?? []
+        guard items.count <= SnapshotPolicy.maxItemCount else {
+            return .skipped
+        }
+
+        var totalBytes = 0
+        var snapshots: [PasteboardItemSnapshot] = []
+
+        for item in items {
             var contents: [NSPasteboard.PasteboardType: Data] = [:]
             for type in item.types {
                 if let data = item.data(forType: type) {
+                    totalBytes += data.count
+                    guard totalBytes <= SnapshotPolicy.maxTotalBytes else {
+                        return .skipped
+                    }
                     contents[type] = data
                 }
             }
-            return PasteboardItemSnapshot(contents: contents)
+            snapshots.append(PasteboardItemSnapshot(contents: contents))
         }
+
+        return .restorable(snapshots)
     }
 
-    private func restorePasteboard(_ snapshot: [PasteboardItemSnapshot], to pasteboard: NSPasteboard) {
+    private func restorePasteboard(_ snapshot: ClipboardSnapshot, to pasteboard: NSPasteboard) {
+        guard case let .restorable(itemsSnapshot) = snapshot else {
+            return
+        }
+
         pasteboard.clearContents()
 
-        let items = snapshot.map { item -> NSPasteboardItem in
+        let items = itemsSnapshot.map { item -> NSPasteboardItem in
             let pasteboardItem = NSPasteboardItem()
             for (type, data) in item.contents {
                 pasteboardItem.setData(data, forType: type)

@@ -2,7 +2,10 @@ import AVFoundation
 import Foundation
 import Speech
 
-final class SpeechTranscriber: @unchecked Sendable {
+@MainActor
+final class SpeechTranscriber {
+    // Recognition lifecycle:
+    // start() -> partial callbacks -> stop()/cancel() -> finish continuation once
     enum Error: Swift.Error {
         case microphonePermissionDenied
         case speechPermissionDenied
@@ -18,6 +21,7 @@ final class SpeechTranscriber: @unchecked Sendable {
     private var recognizer: SFSpeechRecognizer?
     private var latestTranscript = ""
     private var finishContinuation: CheckedContinuation<String, Never>?
+    private var sessionID = 0
 
     func start(locale: Locale) throws {
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else {
@@ -29,6 +33,7 @@ final class SpeechTranscriber: @unchecked Sendable {
         }
 
         cancel()
+        sessionID += 1
 
         latestTranscript = ""
         onTranscriptChanged?("")
@@ -57,18 +62,20 @@ final class SpeechTranscriber: @unchecked Sendable {
             self.handleAudioBuffer(buffer, request: request)
         }
 
+        let currentSessionID = sessionID
         recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, _ in
             guard let self else { return }
+            Task { @MainActor [weak self] in
+                guard let self, self.sessionID == currentSessionID else { return }
 
-            if let text = result?.bestTranscription.formattedString, !text.isEmpty {
-                self.latestTranscript = text
-                DispatchQueue.main.async { [weak self] in
-                    self?.onTranscriptChanged?(text)
+                if let text = result?.bestTranscription.formattedString, !text.isEmpty {
+                    self.latestTranscript = text
+                    self.onTranscriptChanged?(text)
                 }
-            }
 
-            if result?.isFinal == true {
-                self.finishIfNeeded(with: self.latestTranscript)
+                if result?.isFinal == true {
+                    self.finishIfNeeded(with: self.latestTranscript)
+                }
             }
         }
 
@@ -88,13 +95,16 @@ final class SpeechTranscriber: @unchecked Sendable {
             finishContinuation = continuation
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
-                guard let self else { return }
-                self.finishIfNeeded(with: self.latestTranscript)
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.finishIfNeeded(with: self.latestTranscript)
+                }
             }
         }
     }
 
     func cancel() {
+        sessionID += 1
         recognitionTask?.cancel()
         recognitionTask = nil
         recognitionRequest?.endAudio()
@@ -123,7 +133,7 @@ final class SpeechTranscriber: @unchecked Sendable {
         finishContinuation = nil
     }
 
-    private func handleAudioBuffer(_ buffer: AVAudioPCMBuffer, request: SFSpeechAudioBufferRecognitionRequest) {
+    nonisolated private func handleAudioBuffer(_ buffer: AVAudioPCMBuffer, request: SFSpeechAudioBufferRecognitionRequest) {
         request.append(buffer)
 
         guard let channelData = buffer.floatChannelData else { return }
@@ -141,7 +151,7 @@ final class SpeechTranscriber: @unchecked Sendable {
         let decibels = max(-50, 20 * log10(max(rms, 0.000_01)))
         let normalized = CGFloat((decibels + 50) / 50)
 
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
             self?.onLevelChanged?(normalized)
         }
     }
