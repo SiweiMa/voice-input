@@ -2,18 +2,25 @@ import AppKit
 import QuartzCore
 
 final class RecordingOverlayController {
+    private let minPanelWidth: CGFloat = 220
+    private let maxPanelWidth: CGFloat = 560
+    private let minPanelHeight: CGFloat = 56
+    private let maxTextWidth: CGFloat = 460
+
     private let panel: NSPanel
     private let visualEffectView = NSVisualEffectView()
     private let waveformView = WaveformView()
     private let textField = NSTextField(labelWithString: "")
 
+    private var textWidthConstraint: NSLayoutConstraint?
     private var currentWidth: CGFloat = 220
+    private var currentHeight: CGFloat = 56
     private var isShown = false
     private var hideWorkItem: DispatchWorkItem?
 
     init() {
         panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: currentWidth, height: 56),
+            contentRect: NSRect(x: 0, y: 0, width: currentWidth, height: currentHeight),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -42,11 +49,19 @@ final class RecordingOverlayController {
         textField.translatesAutoresizingMaskIntoConstraints = false
         textField.font = .systemFont(ofSize: 15, weight: .medium)
         textField.textColor = .labelColor
-        textField.lineBreakMode = .byTruncatingTail
-        textField.maximumNumberOfLines = 1
+        textField.lineBreakMode = .byWordWrapping
+        textField.maximumNumberOfLines = 0
         textField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        textField.setContentCompressionResistancePriority(.required, for: .vertical)
 
-        let contentView = NSView(frame: NSRect(x: 0, y: 0, width: currentWidth, height: 56))
+        if let cell = textField.cell as? NSTextFieldCell {
+            cell.wraps = true
+            cell.isScrollable = false
+            cell.lineBreakMode = .byWordWrapping
+            cell.usesSingleLineMode = false
+        }
+
+        let contentView = NSView(frame: NSRect(x: 0, y: 0, width: currentWidth, height: currentHeight))
         contentView.translatesAutoresizingMaskIntoConstraints = false
         contentView.wantsLayer = true
         contentView.layer?.masksToBounds = false
@@ -55,6 +70,9 @@ final class RecordingOverlayController {
         contentView.addSubview(visualEffectView)
         visualEffectView.addSubview(waveformView)
         visualEffectView.addSubview(textField)
+
+        let textWidthConstraint = textField.widthAnchor.constraint(equalToConstant: 120)
+        self.textWidthConstraint = textWidthConstraint
 
         NSLayoutConstraint.activate([
             visualEffectView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
@@ -69,7 +87,9 @@ final class RecordingOverlayController {
 
             textField.leadingAnchor.constraint(equalTo: waveformView.trailingAnchor, constant: 14),
             textField.trailingAnchor.constraint(equalTo: visualEffectView.trailingAnchor, constant: -22),
-            textField.centerYAnchor.constraint(equalTo: visualEffectView.centerYAnchor),
+            textField.topAnchor.constraint(equalTo: visualEffectView.topAnchor, constant: 14),
+            textField.bottomAnchor.constraint(equalTo: visualEffectView.bottomAnchor, constant: -14),
+            textWidthConstraint,
         ])
     }
 
@@ -80,7 +100,7 @@ final class RecordingOverlayController {
         resizeIfNeeded(for: textField.stringValue, animated: false)
 
         if !isShown {
-            let frame = targetFrame(forWidth: currentWidth)
+            let frame = targetFrame(forWidth: currentWidth, height: currentHeight)
             panel.setFrame(frame, display: true)
             panel.alphaValue = 0
             panel.orderFrontRegardless()
@@ -121,11 +141,14 @@ final class RecordingOverlayController {
     }
 
     private func resizeIfNeeded(for text: String, animated: Bool) {
-        let targetWidth = measuredWidth(for: text)
-        guard abs(targetWidth - currentWidth) > 1 else { return }
+        let layout = layoutMetrics(for: text)
+        textWidthConstraint?.constant = layout.textWidth
+        guard abs(layout.width - currentWidth) > 1 || abs(layout.height - currentHeight) > 1 else { return }
 
-        currentWidth = targetWidth
-        let frame = targetFrame(forWidth: targetWidth)
+        currentWidth = layout.width
+        currentHeight = layout.height
+
+        let frame = targetFrame(forWidth: layout.width, height: layout.height)
 
         if animated, isShown {
             NSAnimationContext.runAnimationGroup { context in
@@ -138,20 +161,29 @@ final class RecordingOverlayController {
         }
     }
 
-    private func measuredWidth(for text: String) -> CGFloat {
+    private func layoutMetrics(for text: String) -> (width: CGFloat, height: CGFloat, textWidth: CGFloat) {
         let font = textField.font ?? .systemFont(ofSize: 15, weight: .medium)
         let attributes: [NSAttributedString.Key: Any] = [.font: font]
-        let textWidth = ceil((text as NSString).size(withAttributes: attributes).width)
-        let total = 18 + 44 + 14 + textWidth + 22
-        return min(max(total, 160), 560)
+        let singleLineWidth = ceil((text as NSString).size(withAttributes: attributes).width)
+        let targetTextWidth = min(max(singleLineWidth, 80), maxTextWidth)
+        let measuredBounds = (text as NSString).boundingRect(
+            with: NSSize(width: targetTextWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: attributes
+        )
+        let textHeight = ceil(measuredBounds.height)
+
+        let width = min(max(18 + 44 + 14 + targetTextWidth + 22, minPanelWidth), maxPanelWidth)
+        let height = max(minPanelHeight, textHeight + 28)
+        return (width, height, targetTextWidth)
     }
 
-    private func targetFrame(forWidth width: CGFloat) -> NSRect {
+    private func targetFrame(forWidth width: CGFloat, height: CGFloat) -> NSRect {
         let screen = screenForOverlay()
         let visibleFrame = screen.visibleFrame
         let originX = visibleFrame.midX - (width / 2)
         let originY = visibleFrame.minY + 42
-        return NSRect(x: originX, y: originY, width: width, height: 56)
+        return NSRect(x: originX, y: originY, width: width, height: height)
     }
 
     private func screenForOverlay() -> NSScreen {

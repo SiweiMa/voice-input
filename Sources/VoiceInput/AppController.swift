@@ -92,7 +92,7 @@ final class AppController: NSObject {
 
     private func configureStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Voice Input")
+        item.button?.image = AppBrand.statusBarImage()
         item.button?.imagePosition = .imageOnly
         item.button?.toolTip = "Voice Input"
         statusItem = item
