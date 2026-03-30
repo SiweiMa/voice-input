@@ -2,9 +2,11 @@ import SwiftUI
 
 @MainActor
 final class SettingsViewModel: ObservableObject {
+    @Published var speechProvider: SpeechProvider = .apple
     @Published var baseURL = ""
     @Published var apiKey = ""
-    @Published var model = ""
+    @Published var speechModel = ""
+    @Published var refinementModel = ""
     @Published var statusMessage = ""
     @Published var isTesting = false
 
@@ -16,28 +18,36 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func reloadFromSettings() {
+        speechProvider = settings.speechProvider
         baseURL = settings.apiBaseURL
         apiKey = settings.apiKey
-        model = settings.model
+        speechModel = settings.speechModel
+        refinementModel = settings.refinementModel
         statusMessage = ""
     }
 
     func save() {
-        settings.saveLLMConfiguration(baseURL: baseURL, apiKey: apiKey, model: model)
+        settings.saveAPIConfiguration(
+            speechProvider: speechProvider,
+            baseURL: baseURL,
+            apiKey: apiKey,
+            speechModel: speechModel,
+            refinementModel: refinementModel
+        )
         statusMessage = "Saved."
     }
 
     func test() {
         let currentBaseURL = baseURL
         let currentAPIKey = apiKey
-        let currentModel = model
+        let currentModel = refinementModel
 
         guard
             !currentBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             !currentAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             !currentModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
-            statusMessage = "Fill in API Base URL, API Key, and Model first."
+            statusMessage = "Fill in API Base URL, API Key, and Refinement Model first."
             return
         }
 
@@ -68,10 +78,21 @@ struct SettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("OpenAI-Compatible LLM Refinement")
+            Text("Speech & API Settings")
                 .font(.title3.weight(.semibold))
 
             Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 14) {
+                GridRow {
+                    Text("Provider")
+                        .frame(width: 96, alignment: .leading)
+                    Picker("Provider", selection: $viewModel.speechProvider) {
+                        ForEach(SpeechProvider.allCases, id: \.rawValue) { provider in
+                            Text(provider.displayName).tag(provider)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+
                 GridRow {
                     Text("API Base URL")
                         .frame(width: 96, alignment: .leading)
@@ -87,12 +108,24 @@ struct SettingsView: View {
                 }
 
                 GridRow {
-                    Text("Model")
+                    Text("Speech Model")
                         .frame(width: 96, alignment: .leading)
-                    TextField("gpt-4.1-mini", text: $viewModel.model)
+                    TextField("whisper-1", text: $viewModel.speechModel)
+                        .textFieldStyle(.roundedBorder)
+                        .disabled(viewModel.speechProvider == .apple)
+                }
+
+                GridRow {
+                    Text("Refine Model")
+                        .frame(width: 96, alignment: .leading)
+                    TextField("gpt-4.1-mini", text: $viewModel.refinementModel)
                         .textFieldStyle(.roundedBorder)
                 }
             }
+
+            Text(footnoteText)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
 
             HStack(spacing: 12) {
                 Text(viewModel.statusMessage)
@@ -102,7 +135,7 @@ struct SettingsView: View {
 
                 Spacer()
 
-                Button(viewModel.isTesting ? "Testing..." : "Test") {
+                Button(viewModel.isTesting ? "Testing..." : "Test Refinement") {
                     viewModel.test()
                 }
                 .disabled(viewModel.isTesting)
@@ -114,6 +147,15 @@ struct SettingsView: View {
             }
         }
         .padding(20)
-        .frame(width: 560, height: 220)
+        .frame(width: 560, height: 280)
+    }
+
+    private var footnoteText: String {
+        switch viewModel.speechProvider {
+        case .apple:
+            return "Apple Speech is the default. OpenAI API settings are still used for optional LLM refinement."
+        case .openAI:
+            return "OpenAI speech-to-text uses the shared API Base URL, API Key, and Speech Model above. LLM refinement remains optional."
+        }
     }
 }

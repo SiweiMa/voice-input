@@ -8,8 +8,8 @@ final class SettingsWindowController: NSWindowController {
         let rootView = SettingsView(viewModel: viewModel)
         let hostingController = NSHostingController(rootView: rootView)
         let window = NSWindow(contentViewController: hostingController)
-        window.title = "LLM Refinement Settings"
-        window.setContentSize(NSSize(width: 560, height: 240))
+        window.title = "Speech & API Settings"
+        window.setContentSize(NSSize(width: 560, height: 300))
         window.styleMask = [.titled, .closable, .miniaturizable]
         window.center()
         window.isReleasedWhenClosed = false

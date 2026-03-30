@@ -91,11 +91,14 @@ final class AppControllerTests: XCTestCase {
 @MainActor
 private final class FakeSettings: AppSettingsStore {
     var selectedLanguage: AppLanguage = .english
+    var speechProvider: SpeechProvider = .apple
     var llmEnabled: Bool
     var hasLLMConfiguration: Bool
+    var hasSpeechConfiguration = true
     var apiBaseURL = "https://example.com/v1"
     var apiKey = "key"
-    var model = "model"
+    var speechModel = "whisper-1"
+    var refinementModel = "model"
 
     init(llmEnabled: Bool = false, hasLLMConfiguration: Bool = false) {
         self.llmEnabled = llmEnabled
@@ -104,6 +107,10 @@ private final class FakeSettings: AppSettingsStore {
 
     func updateLanguage(_ language: AppLanguage) {
         selectedLanguage = language
+    }
+
+    func updateSpeechProvider(_ provider: SpeechProvider) {
+        speechProvider = provider
     }
 
     func updateLLMEnabled(_ enabled: Bool) {
@@ -136,11 +143,18 @@ private final class FakeTranscriber: SpeechTranscribing {
         self.shouldSuspendStop = shouldSuspendStop
     }
 
-    func start(locale: Locale) throws {
+    func start(
+        provider: SpeechProvider,
+        locale: Locale,
+        languageCode: String,
+        apiBaseURL: String,
+        apiKey: String,
+        model: String
+    ) throws {
         onTranscriptChanged?("")
     }
 
-    func stop() async -> String {
+    func stop() async throws -> String {
         if shouldSuspendStop {
             return await withCheckedContinuation { continuation in
                 stopContinuation = continuation
