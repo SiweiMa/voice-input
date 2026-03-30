@@ -29,6 +29,6 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>VoiceInput needs microphone access to record speech while Fn is held.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>VoiceInput needs speech recognition access to transcribe your voice in real time.</string>
+	<string>VoiceInput needs speech recognition access when Apple Speech is selected.</string>
 </dict>
 </plist>

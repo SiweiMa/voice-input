@@ -9,7 +9,7 @@ final class SettingsWindowController: NSWindowController {
         let hostingController = NSHostingController(rootView: rootView)
         let window = NSWindow(contentViewController: hostingController)
         window.title = "Voice Input"
-        window.setContentSize(NSSize(width: 720, height: 620))
+        window.setContentSize(NSSize(width: 720, height: 760))
         window.styleMask = [.titled, .closable, .miniaturizable]
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true

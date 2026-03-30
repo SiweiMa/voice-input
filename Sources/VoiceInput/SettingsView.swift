@@ -30,10 +30,12 @@ enum ConfigurationState {
 
 @MainActor
 final class SettingsViewModel: ObservableObject {
+    @Published var speechProvider: SpeechProvider = .apple
     @Published var llmEnabled = false
     @Published var baseURL = ""
     @Published var apiKey = ""
-    @Published var model = ""
+    @Published var speechModel = ""
+    @Published var refinementModel = ""
     @Published var statusMessage = ""
     @Published var isTesting = false
 
@@ -46,13 +48,13 @@ final class SettingsViewModel: ObservableObject {
 
     var configurationState: ConfigurationState {
         guard llmEnabled else { return .disabled }
-        return hasRequiredConfiguration ? .ready : .incomplete
+        return hasRequiredRefinementConfiguration ? .ready : .incomplete
     }
 
-    var hasRequiredConfiguration: Bool {
+    var hasRequiredRefinementConfiguration: Bool {
         !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
         !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-        !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !refinementModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var statusTint: Color {
@@ -68,30 +70,38 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func reloadFromSettings() {
+        speechProvider = settings.speechProvider
         llmEnabled = settings.llmEnabled
         baseURL = settings.apiBaseURL
         apiKey = settings.apiKey
-        model = settings.model
+        speechModel = settings.speechModel
+        refinementModel = settings.refinementModel
         statusMessage = ""
     }
 
     func save() {
         settings.updateLLMEnabled(llmEnabled)
-        settings.saveLLMConfiguration(baseURL: baseURL, apiKey: apiKey, model: model)
+        settings.saveAPIConfiguration(
+            speechProvider: speechProvider,
+            baseURL: baseURL,
+            apiKey: apiKey,
+            speechModel: speechModel,
+            refinementModel: refinementModel
+        )
         statusMessage = "Saved."
     }
 
     func test() {
         let currentBaseURL = baseURL
         let currentAPIKey = apiKey
-        let currentModel = model
+        let currentModel = refinementModel
 
         guard
             !currentBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             !currentAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             !currentModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
-            statusMessage = "Fill in API Base URL, API Key, and Model first."
+            statusMessage = "Fill in API Base URL, API Key, and Refinement Model first."
             return
         }
 
@@ -128,13 +138,14 @@ struct SettingsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     heroSection
+                    transcriptionSection
                     refinementSection
                     footerSection
                 }
                 .padding(24)
             }
         }
-        .frame(width: 720, height: 620)
+        .frame(width: 720, height: 760)
     }
 
     private var heroSection: some View {
@@ -146,18 +157,81 @@ struct SettingsView: View {
                     Text("Voice Input")
                         .font(.system(size: 30, weight: .bold, design: .rounded))
 
-                    Text("Speak naturally, refine the transcript, and paste polished text without breaking your flow.")
+                    Text("Choose your speech engine, optionally refine the transcript, and keep paste-ready text flowing.")
                         .font(.title3.weight(.medium))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
 
                     HStack(spacing: 10) {
+                        CapsuleBadge(title: viewModel.speechProvider.displayName, tint: .voiceSky)
                         CapsuleBadge(title: viewModel.configurationState.title, tint: viewModel.configurationState.tint)
-                        CapsuleBadge(title: "OpenAI-Compatible", tint: .voiceSky)
                     }
                 }
 
                 Spacer(minLength: 0)
+            }
+        }
+    }
+
+    private var transcriptionSection: some View {
+        SettingsCard {
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Transcription")
+                        .font(.title3.weight(.semibold))
+
+                    Text("Use Apple Speech by default, or switch to OpenAI when you want a different recognition backend.")
+                        .foregroundStyle(.secondary)
+                }
+
+                SettingsField(title: "Speech Provider", caption: "Apple Speech is the default option.") {
+                    Picker("Speech Provider", selection: $viewModel.speechProvider) {
+                        ForEach(SpeechProvider.allCases, id: \.rawValue) { provider in
+                            Text(provider.displayName).tag(provider)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                if viewModel.speechProvider == .openAI {
+                    VStack(spacing: 14) {
+                        SettingsField(title: "API Base URL", caption: "Example: https://api.openai.com/v1") {
+                            TextField("https://api.openai.com/v1", text: $viewModel.baseURL)
+                                .textFieldStyle(.plain)
+                        }
+
+                        HStack(alignment: .top, spacing: 14) {
+                            SettingsField(title: "API Key", caption: "Stored locally on this Mac.") {
+                                HStack(spacing: 12) {
+                                    Group {
+                                        if revealAPIKey {
+                                            TextField("sk-...", text: $viewModel.apiKey)
+                                        } else {
+                                            SecureField("sk-...", text: $viewModel.apiKey)
+                                        }
+                                    }
+                                    .textFieldStyle(.plain)
+
+                                    Button(revealAPIKey ? "Hide" : "Reveal") {
+                                        revealAPIKey.toggle()
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .foregroundStyle(.secondary)
+                                }
+                            }
+
+                            SettingsField(title: "Speech Model", caption: "Example: whisper-1") {
+                                TextField("whisper-1", text: $viewModel.speechModel)
+                                    .textFieldStyle(.plain)
+                            }
+                        }
+                    }
+                } else {
+                    Text("Apple Speech uses macOS permissions only. OpenAI API credentials are only needed if you later switch providers or enable refinement.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 2)
+                }
             }
         }
     }
@@ -170,7 +244,7 @@ struct SettingsView: View {
                         Text("Refinement")
                             .font(.title3.weight(.semibold))
 
-                        Text("Connect an OpenAI-compatible endpoint to clean up dictated text before it is pasted.")
+                        Text("Optionally clean up dictated text with an OpenAI-compatible endpoint before pasting.")
                             .foregroundStyle(.secondary)
                     }
 
@@ -205,13 +279,16 @@ struct SettingsView: View {
                 )
 
                 VStack(spacing: 14) {
-                    SettingsField(title: "API Base URL", caption: "Example: https://api.openai.com/v1") {
+                    SettingsField(
+                        title: "Shared API Endpoint",
+                        caption: "Used for refinement, and also for OpenAI transcription if you select that provider."
+                    ) {
                         TextField("https://api.openai.com/v1", text: $viewModel.baseURL)
                             .textFieldStyle(.plain)
                     }
 
                     HStack(alignment: .top, spacing: 14) {
-                        SettingsField(title: "API Key", caption: "Stored locally on this Mac.") {
+                        SettingsField(title: "Shared API Key", caption: "Stored locally on this Mac.") {
                             HStack(spacing: 12) {
                                 Group {
                                     if revealAPIKey {
@@ -230,8 +307,8 @@ struct SettingsView: View {
                             }
                         }
 
-                        SettingsField(title: "Model", caption: "Example: gpt-4.1-mini") {
-                            TextField("gpt-4.1-mini", text: $viewModel.model)
+                        SettingsField(title: "Refinement Model", caption: "Example: gpt-4.1-mini") {
+                            TextField("gpt-4.1-mini", text: $viewModel.refinementModel)
                                 .textFieldStyle(.plain)
                         }
                     }
@@ -244,7 +321,7 @@ struct SettingsView: View {
         HStack(spacing: 14) {
             Group {
                 if viewModel.statusMessage.isEmpty {
-                    Text("Changes are saved locally. Use Test to validate your endpoint before you rely on it.")
+                    Text("Changes are saved locally. Use Test to validate the refinement endpoint before you rely on it.")
                         .foregroundStyle(.secondary)
                 } else {
                     Text(viewModel.statusMessage)
@@ -269,7 +346,7 @@ struct SettingsView: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.large)
-            .disabled(viewModel.isTesting || !viewModel.hasRequiredConfiguration)
+            .disabled(viewModel.isTesting || !viewModel.hasRequiredRefinementConfiguration)
 
             Button("Save") {
                 viewModel.save()

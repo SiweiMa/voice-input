@@ -25,7 +25,8 @@ final class AppController: NSObject {
     private var statusItem: NSStatusItem?
     private var sessionState: SessionState = .idle
     private var nextSessionID = 0
-    private var permissionsPrimed = false
+    private var microphonePermissionPrimed = false
+    private var speechPermissionPrimed = false
     private var observer: NSObjectProtocol?
     private var eventTapAvailable = true
     private var fnMonitorRetryTimer: Timer?
@@ -71,6 +72,7 @@ final class AppController: NSObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
+                self?.primeSpeechPermissionIfNeeded()
                 self?.rebuildMenu()
             }
         }
@@ -113,14 +115,23 @@ final class AppController: NSObject {
     }
 
     private func requestInitialPermissions() {
-        guard !permissionsPrimed else { return }
-        permissionsPrimed = true
-
-        SFSpeechRecognizer.requestAuthorization { _ in }
-        AVCaptureDevice.requestAccess(for: .audio) { _ in }
+        primeMicrophonePermissionIfNeeded()
+        primeSpeechPermissionIfNeeded()
 
         let options = [kAXTrustedCheckOptionPrompt.takeRetainedValue() as String: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
+    }
+
+    private func primeMicrophonePermissionIfNeeded() {
+        guard !microphonePermissionPrimed else { return }
+        microphonePermissionPrimed = true
+        AVCaptureDevice.requestAccess(for: .audio) { _ in }
+    }
+
+    private func primeSpeechPermissionIfNeeded() {
+        guard settings.speechProvider == .apple, !speechPermissionPrimed else { return }
+        speechPermissionPrimed = true
+        SFSpeechRecognizer.requestAuthorization { _ in }
     }
 
     private func refreshFnMonitorAvailability() {
@@ -160,11 +171,18 @@ final class AppController: NSObject {
         overlayController.updateTranscript("")
 
         do {
-            try transcriber.start(locale: settings.selectedLanguage.locale)
+            try transcriber.start(
+                provider: settings.speechProvider,
+                locale: settings.selectedLanguage.locale,
+                languageCode: settings.selectedLanguage.speechLanguageCode,
+                apiBaseURL: settings.apiBaseURL,
+                apiKey: settings.apiKey,
+                model: settings.speechModel
+            )
         } catch {
             sessionState = .idle
-            overlayController.updateStatus("Speech unavailable")
-            overlayController.hide(after: 0.9)
+            overlayController.updateStatus(displayMessage(for: error))
+            overlayController.hide(after: 1.2)
         }
     }
 
@@ -173,6 +191,7 @@ final class AppController: NSObject {
 
         sessionState = .finalizing(sessionID: sessionID)
         overlayController.updateAudioLevel(0)
+        overlayController.updateStatus("Transcribing...")
 
         finalizationTask?.cancel()
         finalizationTask = Task { @MainActor [weak self] in
@@ -307,8 +326,19 @@ final class AppController: NSObject {
     }
 
     private func finalizeRecording(sessionID: Int) async {
-        let transcript = await transcriber.stop()
-        guard isFinalizingSession(sessionID), !Task.isCancelled else {
+        let transcript: String
+        do {
+            transcript = try await transcriber.stop()
+            guard isFinalizingSession(sessionID), !Task.isCancelled else {
+                completeFinalization(sessionID: sessionID)
+                return
+            }
+        } catch is CancellationError {
+            completeFinalization(sessionID: sessionID)
+            return
+        } catch {
+            overlayController.updateStatus(displayMessage(for: error))
+            overlayController.hide(after: 1.0)
             completeFinalization(sessionID: sessionID)
             return
         }
@@ -330,7 +360,7 @@ final class AppController: NSObject {
                     trimmedTranscript,
                     baseURL: settings.apiBaseURL,
                     apiKey: settings.apiKey,
-                    model: settings.model
+                    model: settings.refinementModel
                 )
 
                 guard isFinalizingSession(sessionID), !Task.isCancelled else {
@@ -393,6 +423,10 @@ final class AppController: NSObject {
             warnings.append("Paste injection unavailable: allow Accessibility")
         }
 
+        if settings.speechProvider == .openAI, !settings.hasSpeechConfiguration {
+            warnings.append("OpenAI API settings are required for transcription")
+        }
+
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
             break
@@ -402,15 +436,25 @@ final class AppController: NSObject {
             warnings.append("Microphone permission is required")
         }
 
-        switch SFSpeechRecognizer.authorizationStatus() {
-        case .authorized:
-            break
-        case .notDetermined:
-            warnings.append("Speech Recognition permission is pending")
-        default:
-            warnings.append("Speech Recognition permission is required")
+        if settings.speechProvider == .apple {
+            switch SFSpeechRecognizer.authorizationStatus() {
+            case .authorized:
+                break
+            case .notDetermined:
+                warnings.append("Speech Recognition permission is pending")
+            default:
+                warnings.append("Speech Recognition permission is required")
+            }
         }
 
         return warnings
+    }
+
+    private func displayMessage(for error: Swift.Error) -> String {
+        if let localizedError = error as? LocalizedError, let description = localizedError.errorDescription {
+            return description
+        }
+
+        return "Transcription unavailable"
     }
 }

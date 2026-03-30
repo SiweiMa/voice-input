@@ -4,13 +4,17 @@ import Foundation
 @MainActor
 protocol AppSettingsStore: AnyObject {
     var selectedLanguage: AppLanguage { get }
+    var speechProvider: SpeechProvider { get }
     var llmEnabled: Bool { get }
     var hasLLMConfiguration: Bool { get }
+    var hasSpeechConfiguration: Bool { get }
     var apiBaseURL: String { get }
     var apiKey: String { get }
-    var model: String { get }
+    var speechModel: String { get }
+    var refinementModel: String { get }
 
     func updateLanguage(_ language: AppLanguage)
+    func updateSpeechProvider(_ provider: SpeechProvider)
     func updateLLMEnabled(_ enabled: Bool)
 }
 
@@ -27,8 +31,15 @@ protocol SpeechTranscribing: AnyObject {
     var onTranscriptChanged: ((String) -> Void)? { get set }
     var onLevelChanged: ((CGFloat) -> Void)? { get set }
 
-    func start(locale: Locale) throws
-    func stop() async -> String
+    func start(
+        provider: SpeechProvider,
+        locale: Locale,
+        languageCode: String,
+        apiBaseURL: String,
+        apiKey: String,
+        model: String
+    ) throws
+    func stop() async throws -> String
     func cancel()
 }
 
