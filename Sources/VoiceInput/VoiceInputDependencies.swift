@@ -12,6 +12,7 @@ protocol AppSettingsStore: AnyObject {
     var apiKey: String { get }
     var speechModel: String { get }
     var refinementModel: String { get }
+    var effectiveSystemPrompt: String { get }
 
     func updateLanguage(_ language: AppLanguage)
     func updateSpeechProvider(_ provider: SpeechProvider)
@@ -68,7 +69,7 @@ protocol PasteInjecting: AnyObject {
 
 @MainActor
 protocol LLMRefining: AnyObject {
-    func refine(_ text: String, baseURL: String, apiKey: String, model: String) async throws -> String
+    func refine(_ text: String, baseURL: String, apiKey: String, model: String, systemPrompt: String) async throws -> String
 }
 
 @MainActor

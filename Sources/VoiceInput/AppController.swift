@@ -360,7 +360,8 @@ final class AppController: NSObject {
                     trimmedTranscript,
                     baseURL: settings.apiBaseURL,
                     apiKey: settings.apiKey,
-                    model: settings.refinementModel
+                    model: settings.refinementModel,
+                    systemPrompt: settings.effectiveSystemPrompt
                 )
 
                 guard isFinalizingSession(sessionID), !Task.isCancelled else {

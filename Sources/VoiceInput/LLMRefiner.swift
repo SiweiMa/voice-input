@@ -18,20 +18,7 @@ final class LLMRefiner {
         }
     }
 
-    private let systemPrompt = """
-    You refine speech recognition transcripts very conservatively.
-    Only fix obvious recognition mistakes.
-    Preserve wording, ordering, punctuation, spacing, and mixed-language content whenever they already look correct.
-    Do not rewrite, summarize, polish, expand, or remove content.
-    Only apply minimal corrections such as:
-    - Chinese homophone mistakes
-    - Technical terms mistranscribed into Chinese characters, for example 配森 -> Python, 杰森 -> JSON
-    - Clearly wrong English spellings caused by speech recognition
-    If the input already looks correct, return it exactly unchanged.
-    Return only the final text.
-    """
-
-    func refine(_ text: String, baseURL: String, apiKey: String, model: String) async throws -> String {
+    func refine(_ text: String, baseURL: String, apiKey: String, model: String, systemPrompt: String) async throws -> String {
         let endpoint = try chatCompletionsURL(from: baseURL)
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
@@ -71,8 +58,8 @@ final class LLMRefiner {
         return content
     }
 
-    func test(baseURL: String, apiKey: String, model: String) async throws -> String {
-        try await refine("请把 杰森 文件 发给我", baseURL: baseURL, apiKey: apiKey, model: model)
+    func test(baseURL: String, apiKey: String, model: String, systemPrompt: String) async throws -> String {
+        try await refine("请把 杰森 文件 发给我", baseURL: baseURL, apiKey: apiKey, model: model, systemPrompt: systemPrompt)
     }
 
     private func chatCompletionsURL(from baseURL: String) throws -> URL {
