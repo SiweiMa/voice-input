@@ -36,6 +36,7 @@ final class SettingsViewModel: ObservableObject {
     @Published var apiKey = ""
     @Published var speechModel = ""
     @Published var refinementModel = ""
+    @Published var refinementSystemPrompt = ""
     @Published var statusMessage = ""
     @Published var isTesting = false
 
@@ -76,6 +77,7 @@ final class SettingsViewModel: ObservableObject {
         apiKey = settings.apiKey
         speechModel = settings.speechModel
         refinementModel = settings.refinementModel
+        refinementSystemPrompt = settings.refinementSystemPrompt
         statusMessage = ""
     }
 
@@ -86,7 +88,8 @@ final class SettingsViewModel: ObservableObject {
             baseURL: baseURL,
             apiKey: apiKey,
             speechModel: speechModel,
-            refinementModel: refinementModel
+            refinementModel: refinementModel,
+            refinementSystemPrompt: refinementSystemPrompt
         )
         statusMessage = "Saved."
     }
@@ -95,6 +98,9 @@ final class SettingsViewModel: ObservableObject {
         let currentBaseURL = baseURL
         let currentAPIKey = apiKey
         let currentModel = refinementModel
+        let currentSystemPrompt = refinementSystemPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? AppSettings.defaultSystemPrompt
+            : refinementSystemPrompt
 
         guard
             !currentBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -115,7 +121,8 @@ final class SettingsViewModel: ObservableObject {
                 let result = try await self.refiner.test(
                     baseURL: currentBaseURL,
                     apiKey: currentAPIKey,
-                    model: currentModel
+                    model: currentModel,
+                    systemPrompt: currentSystemPrompt
                 )
                 self.statusMessage = "Success: \(result)"
             } catch {
@@ -145,7 +152,7 @@ struct SettingsView: View {
                 .padding(24)
             }
         }
-        .frame(width: 720, height: 760)
+        .frame(width: 720, height: 920)
     }
 
     private var heroSection: some View {
@@ -312,6 +319,54 @@ struct SettingsView: View {
                                 .textFieldStyle(.plain)
                         }
                     }
+                }
+
+                VStack(alignment: .leading, spacing: 9) {
+                    HStack {
+                        Text("SYSTEM PROMPT")
+                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                            .tracking(1.1)
+                            .foregroundStyle(.secondary)
+
+                        Spacer()
+
+                        Button("Reset to Default") {
+                            viewModel.refinementSystemPrompt = ""
+                        }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+
+                    TextEditor(text: $viewModel.refinementSystemPrompt)
+                        .font(.body.weight(.medium))
+                        .scrollContentBackground(.hidden)
+                        .padding(10)
+                        .frame(minHeight: 120, maxHeight: 180)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(Color.white.opacity(0.74))
+                        )
+                        .overlay(
+                            Group {
+                                if viewModel.refinementSystemPrompt.isEmpty {
+                                    Text(AppSettings.defaultSystemPrompt)
+                                        .font(.body.weight(.medium))
+                                        .foregroundStyle(.tertiary)
+                                        .padding(14)
+                                        .allowsHitTesting(false)
+                                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                                }
+                            }
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .stroke(Color.white.opacity(0.65), lineWidth: 1)
+                        )
+
+                    Text("Customize the instructions sent to the LLM. Leave empty to use the default prompt.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
             }
         }

@@ -60,6 +60,7 @@ final class AppSettings {
         static let apiKey = "openai.apiKey"
         static let speechModel = "speech.model"
         static let refinementModel = "llm.model"
+        static let refinementSystemPrompt = "llm.systemPrompt"
     }
 
     private let defaults: UserDefaults
@@ -71,6 +72,20 @@ final class AppSettings {
     private(set) var apiKey: String
     private(set) var speechModel: String
     private(set) var refinementModel: String
+    private(set) var refinementSystemPrompt: String
+
+    static let defaultSystemPrompt = """
+    You refine speech recognition transcripts very conservatively.
+    Only fix obvious recognition mistakes.
+    Preserve wording, ordering, punctuation, spacing, and mixed-language content whenever they already look correct.
+    Do not rewrite, summarize, polish, expand, or remove content.
+    Only apply minimal corrections such as:
+    - Chinese homophone mistakes
+    - Technical terms mistranscribed into Chinese characters, for example 配森 -> Python, 杰森 -> JSON
+    - Clearly wrong English spellings caused by speech recognition
+    If the input already looks correct, return it exactly unchanged.
+    Return only the final text.
+    """
 
     private init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -81,6 +96,12 @@ final class AppSettings {
         apiKey = defaults.string(forKey: Keys.apiKey) ?? ""
         speechModel = defaults.string(forKey: Keys.speechModel) ?? "whisper-1"
         refinementModel = defaults.string(forKey: Keys.refinementModel) ?? ""
+        refinementSystemPrompt = defaults.string(forKey: Keys.refinementSystemPrompt) ?? ""
+    }
+
+    var effectiveSystemPrompt: String {
+        let trimmed = refinementSystemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? Self.defaultSystemPrompt : trimmed
     }
 
     var hasLLMConfiguration: Bool {
@@ -118,7 +139,8 @@ final class AppSettings {
         baseURL: String,
         apiKey: String,
         speechModel: String,
-        refinementModel: String
+        refinementModel: String,
+        refinementSystemPrompt: String
     ) {
         let sanitizedBaseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let sanitizedSpeechModel = speechModel.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -129,12 +151,14 @@ final class AppSettings {
         self.apiKey = apiKey
         self.speechModel = sanitizedSpeechModel
         self.refinementModel = sanitizedRefinementModel
+        self.refinementSystemPrompt = refinementSystemPrompt
 
         defaults.set(speechProvider.rawValue, forKey: Keys.speechProvider)
         defaults.set(sanitizedBaseURL, forKey: Keys.apiBaseURL)
         defaults.set(apiKey, forKey: Keys.apiKey)
         defaults.set(sanitizedSpeechModel, forKey: Keys.speechModel)
         defaults.set(sanitizedRefinementModel, forKey: Keys.refinementModel)
+        defaults.set(refinementSystemPrompt, forKey: Keys.refinementSystemPrompt)
         notifyChanged()
     }
 
