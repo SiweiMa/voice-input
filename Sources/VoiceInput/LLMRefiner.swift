@@ -31,8 +31,7 @@ final class LLMRefiner {
             messages: [
                 .init(role: "system", content: systemPrompt),
                 .init(role: "user", content: text),
-            ],
-            temperature: 0
+            ]
         )
 
         request.httpBody = try JSONEncoder().encode(payload)
@@ -99,7 +98,7 @@ private struct ChatCompletionRequest: Encodable {
 
     let model: String
     let messages: [Message]
-    let temperature: Double
+    var temperature: Double? = nil
 }
 
 private struct ChatCompletionResponse: Decodable {
